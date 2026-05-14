@@ -1,10 +1,21 @@
 import { Module } from '@nestjs/common';
+import { AnomaliesModule } from './anomalies/anomalies.module';
 import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { DataModule } from './data/data.module';
+import { DistrictsModule } from './districts/districts.module';
+import { OverviewModule } from './overview/overview.module';
+import { TelemetryModule } from './telemetry/telemetry.module';
+import { UnitsModule } from './units/units.module';
 
 @Module({
-  imports: [],
+  imports: [
+    DataModule,
+    UnitsModule,
+    TelemetryModule,
+    AnomaliesModule,
+    DistrictsModule,
+    OverviewModule,
+  ],
   controllers: [AppController],
-  providers: [AppService],
 })
 export class AppModule {}
