@@ -1,98 +1,95 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# chip-backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+CHIP — **Child-Health Intelligence Platform** API.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+Publishes a daily **0–4 child-weighted risk level** per district for Vientiane
+prefecture, combining environmental measurement from the national school
+climate network (AirGradient Public API) with a child-density weighting layer.
+Aggregate epidemiological case data and the Ridge regression climate-health
+model are integrated under the workplan; this service already exposes the index
+in its final API shape.
 
-## Description
+Stack: **Node.js + Express + TypeScript**. Licence: **MIT** (derived data
+products are released separately under CC-BY-SA 4.0 per the AirGradient source).
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Architecture
 
-## Project setup
-
-```bash
-$ npm install
+```
+ingestion/     source-neutral ingestion layer
+  source.ts      EnvironmentalSource interface + district geography
+  airgradient.ts AirGradient Public API adapter (real; graceful fallback)
+  synthetic.ts   deterministic synthetic network (fallback / offline dev)
+domain/        the 0-4 risk model
+  riskLevels.ts  0-4 level definitions, labels, colours, preparedness postures
+  risk.ts        child-weighted risk computation (interpretable Ridge stand-in)
+  types.ts       domain types
+store.ts       builds districts / overview / telemetry / anomalies / sources
+routes/        Express /api router
+app.ts         app assembly (CORS, routing)
+index.ts       bootstrap
 ```
 
-## Compile and run the project
+The ingestion layer is **source-neutral**: the AirGradient connector and the
+synthetic generator are both adapters behind one interface, so MQTT / HTTP REST
+/ CSV adapters (and, later, PostgreSQL + PostGIS storage) slot in without
+changing anything downstream.
+
+## Environmental data source
+
+By default the service pulls **live** data from the AirGradient Public API — the
+UNICEF Lao PDR national school climate network is exposed there **with no token
+required**. The connector filters public sites to `publicContributorName =
+"UNICEF"` (≈96 sensors nationally) and keeps those within Vientiane prefecture
+(the modelled geography); out-of-prefecture sensors are logged and excluded.
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm run dev                      # live UNICEF network by default
+AIRGRADIENT_ENABLED=false npm run dev   # force the synthetic fallback
 ```
 
-## Run tests
+If the live source is unreachable or returns nothing usable, the service logs a
+warning and falls back to synthetic — it never hard-fails on a missing upstream.
+`GET /api/sources` reports whether the environmental source is live or synthetic.
+
+Config env vars: `AIRGRADIENT_ENABLED` (default true), `AIRGRADIENT_CONTRIBUTOR`
+(default `UNICEF`), `AIRGRADIENT_BASE_URL`, `AIRGRADIENT_API_TOKEN` (optional,
+passed through if set), `AIRGRADIENT_TIMEOUT_MS`.
+
+> Note: with only ~9 sensors inside Vientiane prefecture, per-district data
+> completeness is low and many districts fall back to a baseline estimate with a
+> wide uncertainty band. This is expected and reported honestly, not an error.
+
+## API
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/health` | liveness |
+| `GET /api/overview` | national roll-up: level distribution, children covered, completeness |
+| `GET /api/districts` | all districts with 0–4 level, score, uncertainty band, drivers |
+| `GET /api/districts/:id` | one district |
+| `GET /api/districts/heatmap` | weighted points for map rendering |
+| `GET /api/sites` | monitoring network sites (network infrastructure) |
+| `GET /api/telemetry/aggregate?range=24h\|7d` | aggregate CO₂/PM2.5/temp/humidity series |
+| `GET /api/anomalies?limit=&level=` | district-level environmental deviations |
+| `GET /api/sources` | per-source status (live / synthetic / planned) + completeness |
+
+## Scripts
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+npm run dev        # watch mode (tsx)
+npm run build      # tsc -> dist/
+npm start          # run built server
+npm test           # vitest
+npm run test:cov   # vitest + coverage (target >= 80%)
+npm run lint
 ```
 
-## Deployment
+## Notes on prototype honesty
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+- The risk model is a transparent, interpretable **stand-in** for the Ridge
+  regression climate-health model (Q2 2027). The index is preliminary until
+  fitted against epidemiological case data.
+- Epidemiological and satellite/reanalysis sources are reported as `synthetic`
+  or `planned` in `/api/sources` — nothing here presents unfitted data as real.
+- Baselines are tuned to be **seasonally plausible** (August = wet season, so
+  PM2.5 is suppressed and heat/humidity dominate).
