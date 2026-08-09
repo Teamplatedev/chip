@@ -2,8 +2,9 @@ import type {
   Anomaly,
   DistrictRisk,
   HeatmapPoint,
+  MonitoringSite,
   Overview,
-  SensorUnit,
+  SourceStatus,
   TelemetryPoint,
 } from "./types";
 
@@ -27,15 +28,13 @@ async function get<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   overview: () => get<Overview>("/overview"),
-  units: () => get<SensorUnit[]>("/units"),
-  unit: (id: string) => get<SensorUnit>(`/units/${encodeURIComponent(id)}`),
-  anomalies: (limit = 30) => get<Anomaly[]>(`/anomalies?limit=${limit}`),
   districts: () => get<DistrictRisk[]>("/districts"),
+  district: (id: string) =>
+    get<DistrictRisk>(`/districts/${encodeURIComponent(id)}`),
   heatmap: () => get<HeatmapPoint[]>("/districts/heatmap"),
-  telemetry: (unitId: string, range: "24h" | "7d" = "24h") =>
-    get<TelemetryPoint[]>(
-      `/telemetry/${encodeURIComponent(unitId)}?range=${range}`,
-    ),
+  sites: () => get<MonitoringSite[]>("/sites"),
+  anomalies: (limit = 30) => get<Anomaly[]>(`/anomalies?limit=${limit}`),
+  sources: () => get<SourceStatus[]>("/sources"),
   telemetryAggregate: (range: "24h" | "7d" = "24h") =>
     get<TelemetryPoint[]>(`/telemetry/aggregate?range=${range}`),
 };

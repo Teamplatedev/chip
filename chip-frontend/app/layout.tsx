@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CHIP · Risk Operations",
+  title: "CHIP · Child-Health Intelligence Platform",
   description:
-    "Child-weighted environmental risk index dashboard for Vientiane, Lao PDR.",
+    "Daily 0–4 child-weighted environmental risk index for Vientiane, Lao PDR.",
 };
 
 export default function RootLayout({

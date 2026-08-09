@@ -5,8 +5,9 @@ import { DashboardHeader } from "@/components/dashboard/header";
 import { DistrictRiskPanel } from "@/components/dashboard/district-risk";
 import { KpiCards } from "@/components/dashboard/kpi-cards";
 import { MapPanel } from "@/components/dashboard/map-panel";
+import { MonitoringNetwork } from "@/components/dashboard/monitoring-network";
+import { SourceStatusPanel } from "@/components/dashboard/source-status";
 import { TelemetryChart } from "@/components/dashboard/telemetry-chart";
-import { UnitList } from "@/components/dashboard/unit-list";
 import { api } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
@@ -14,51 +15,49 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   let data;
   try {
-    const [overview, units, anomalies, districts, heatmap, telemetry] =
+    const [overview, districts, sites, anomalies, telemetry, sources] =
       await Promise.all([
         api.overview(),
-        api.units(),
-        api.anomalies(30),
         api.districts(),
-        api.heatmap(),
+        api.sites(),
+        api.anomalies(30),
         api.telemetryAggregate("24h"),
+        api.sources(),
       ]);
-    data = { overview, units, anomalies, districts, heatmap, telemetry };
+    data = { overview, districts, sites, anomalies, telemetry, sources };
   } catch (err) {
     return <BackendDown error={err instanceof Error ? err.message : String(err)} />;
   }
 
-  const { overview, units, anomalies, districts, heatmap, telemetry } = data;
+  const { overview, districts, sites, anomalies, telemetry, sources } = data;
 
   return (
     <div className="flex min-h-full flex-1 flex-col bg-muted/30">
-      <DashboardHeader
-        onlineCount={overview.onlineCount}
-        totalCount={overview.totalCount}
-        childrenCovered={overview.childrenCovered}
-      />
+      <DashboardHeader overview={overview} />
       <main className="mx-auto flex w-full max-w-[1400px] flex-1 flex-col gap-4 px-4 py-6 lg:px-6">
-        <KpiCards dimensions={overview.dimensions} />
+        <KpiCards overview={overview} districts={districts} />
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
           <div className="flex flex-col gap-4 xl:col-span-2">
-            <MapPanel units={units} heatmap={heatmap} />
+            <MapPanel districts={districts} sites={sites} />
             <TelemetryChart points={telemetry} />
           </div>
           <div className="flex flex-col gap-4">
-            <AnomalyFeed anomalies={anomalies} />
             <DistrictRiskPanel districts={districts} />
+            <AnomalyFeed anomalies={anomalies} />
+            <SourceStatusPanel sources={sources} />
           </div>
         </div>
 
         <div className="grid grid-cols-1 gap-4">
-          <UnitList units={units} />
+          <MonitoringNetwork sites={sites} />
         </div>
 
         <footer className="mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
           <span>
-            CHIP prototype · {overview.totalCount} sensor units ·{" "}
-            {anomalies.length} active anomalies
+            CHIP prototype · {overview.districtsCovered} districts ·{" "}
+            {overview.monitorsTotal} monitoring sites · {anomalies.length} active
+            deviations
           </span>
           <span>
             Last sync{" "}
@@ -85,7 +84,7 @@ function BackendDown({ error }: { error: string }) {
         <p className="text-muted-foreground">
           Start the API with{" "}
           <code className="rounded bg-muted px-1 font-mono text-xs">
-            cd chip-backend && npm run start:dev
+            cd chip-backend && npm run dev
           </code>{" "}
           then refresh.
         </p>

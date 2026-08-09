@@ -68,9 +68,10 @@ export function TelemetryChart({ points }: { points: TelemetryPoint[] }) {
       <CardHeader>
         <div className="flex items-start justify-between gap-2">
           <div>
-            <CardTitle>Anomaly precursor signals · 24h</CardTitle>
+            <CardTitle>Prefecture exposure trend · 24h</CardTitle>
             <CardDescription>
-              Ensemble model fuses CO₂ and PM2.5 to surface breaches before threshold.
+              Network-aggregate CO₂ and PM2.5 — the climate drivers behind the
+              child-weighted index.
             </CardDescription>
           </div>
           <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
