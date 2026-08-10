@@ -48,5 +48,10 @@ GitHub Actions CI.
 
 ## Licence
 
-Software: **MIT** ([`LICENSE`](LICENSE)). Data products derived from AirGradient
-measurements: **CC-BY-SA 4.0** ([`NOTICE`](NOTICE)).
+Dual-licensed, in separate files:
+
+- **Software** (source code): MIT — [`LICENSE`](LICENSE).
+- **Data products** derived from AirGradient measurements: CC-BY-SA 4.0 —
+  [`LICENSE-DATA`](LICENSE-DATA).
+
+Attribution and the split are described in [`NOTICE`](NOTICE).

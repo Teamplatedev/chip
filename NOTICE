@@ -6,9 +6,10 @@ This product includes software released under the MIT License (see LICENSE).
 Licensing separation
 ---------------------
 - Software components (source code in chip-backend and chip-frontend) are
-  licensed under the MIT License.
+  licensed under the MIT License. See the LICENSE file.
 - Data products derived from AirGradient Public API measurements are licensed
-  separately under CC-BY-SA 4.0, as required by that source.
+  separately under CC-BY-SA 4.0, as required by that source. See the
+  LICENSE-DATA file.
 
 Attribution
 -----------
