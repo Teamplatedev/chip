@@ -1,5 +1,7 @@
 export interface Config {
   port: number;
+  /** Background data-refresh interval, in minutes. */
+  refreshIntervalMin: number;
   corsOrigins: (string | RegExp)[];
   airgradient: {
     enabled: boolean;
@@ -14,6 +16,7 @@ export interface Config {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     port: Number(env.PORT ?? 3001),
+    refreshIntervalMin: Number(env.REFRESH_INTERVAL_MIN ?? 15),
     corsOrigins: [
       'http://localhost:3000',
       'http://127.0.0.1:3000',

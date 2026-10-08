@@ -19,7 +19,7 @@ import {
   PREFECTURE_RADIUS_DEG,
   Rng,
   type DistrictSeed,
-  type RawReading,
+  type IngestionResult,
 } from './ingestion/index.js';
 
 /**
@@ -41,6 +41,11 @@ function mean(values: number[]): number {
  * 0-4 child-weighted risk per district, and derives overview / telemetry /
  * anomalies / source status. Replaced by PostgreSQL + PostGIS in a later phase;
  * the read API it exposes stays the same.
+ *
+ * `refresh()` re-fetches and recomputes everything, timestamping the snapshot
+ * with the current time; `startAutoRefresh()` runs it periodically in the
+ * background. The new snapshot is assembled into locals and swapped in
+ * atomically, so a failed refresh leaves the previous data in place.
  */
 export class DataStore {
   private sites: MonitoringSite[] = [];
@@ -49,17 +54,48 @@ export class DataStore {
   private telemetry: TelemetryPoint[] = [];
   private sourceStatus: SourceStatus[] = [];
   private overview!: Overview;
-  private generatedAt = '2026-08-09T09:00:00+07:00';
-  private liveSourceLabel = '';
-  private isLive = false;
+  private refreshTimer?: ReturnType<typeof setInterval>;
 
   constructor(private readonly ingestion: IngestionService) {}
 
+  /** Initial load. Rejects if the first load fails (the server should not start empty). */
   async init(): Promise<void> {
+    await this.refresh();
+  }
+
+  /**
+   * Re-fetch from the ingestion service and recompute every derived value,
+   * timestamped with the current time. The result is swapped in atomically: if
+   * the load rejects or a build step throws, the previous snapshot is untouched.
+   */
+  async refresh(): Promise<void> {
     const result = await this.ingestion.load();
-    this.liveSourceLabel = result.source;
-    this.isLive = result.live;
-    this.build(result.readings);
+    this.rebuild(result);
+  }
+
+  /**
+   * Run `refresh()` every `intervalMs`. Refresh errors are caught and logged so
+   * the server keeps serving the previous data instead of crashing. The
+   * AirGradient→synthetic fallback inside the ingestion layer is unchanged.
+   */
+  startAutoRefresh(intervalMs: number): void {
+    this.stopAutoRefresh();
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return;
+    this.refreshTimer = setInterval(() => {
+      void this.refresh().catch((err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`[store] periodic refresh failed, keeping previous data: ${msg}`);
+      });
+    }, intervalMs);
+    // A refresh timer should not keep the process alive on its own.
+    this.refreshTimer.unref?.();
+  }
+
+  stopAutoRefresh(): void {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+      this.refreshTimer = undefined;
+    }
   }
 
   getOverview(): Overview {
@@ -98,14 +134,18 @@ export class DataStore {
 
   // -- build pipeline ------------------------------------------------------
 
-  private build(allReadings: RawReading[]): void {
+  private rebuild(result: IngestionResult): void {
+    // Timestamp this snapshot with the current time so telemetry and anomaly
+    // timestamps below are anchored to "now" rather than a fixed date.
+    const generatedAt = new Date().toISOString();
+
     // The prototype models Vientiane prefecture. The live UNICEF network is
     // national (17 provinces), so drop sensors outside the prefecture rather
     // than mis-assigning them — and report how many were dropped.
-    const readings = allReadings.filter(
+    const readings = result.readings.filter(
       (r) => nearestDistrictWithin(r.lat, r.lng, PREFECTURE_RADIUS_DEG) !== null,
     );
-    const dropped = allReadings.length - readings.length;
+    const dropped = result.readings.length - readings.length;
     if (dropped > 0) {
       console.log(
         `[store] ${readings.length} sensors within Vientiane prefecture; ` +
@@ -113,7 +153,7 @@ export class DataStore {
       );
     }
 
-    this.sites = readings.map((r) => ({
+    const sites: MonitoringSite[] = readings.map((r) => ({
       id: r.siteId,
       name: r.siteName,
       district: nearestDistrict(r.lat, r.lng).name,
@@ -134,23 +174,33 @@ export class DataStore {
     const maxChildren = Math.max(...DISTRICT_SEEDS.map((d) => d.childPopulation));
     const maxSchools = Math.max(...DISTRICT_SEEDS.map((d) => d.schoolCount));
 
-    this.districts = DISTRICT_SEEDS.map((seed) =>
-      this.buildDistrict(seed, rng, maxChildren, maxSchools),
+    const districts = DISTRICT_SEEDS.map((seed) =>
+      this.buildDistrict(seed, sites, rng, maxChildren, maxSchools, generatedAt),
     );
 
-    this.buildTelemetry(rng);
-    this.buildAnomalies(rng);
-    this.buildOverview();
-    this.buildSourceStatus();
+    const telemetry = this.buildTelemetry(districts, rng, generatedAt);
+    const anomalies = this.buildAnomalies(districts, rng, generatedAt);
+    const overview = this.buildOverview(districts, sites, anomalies, generatedAt);
+    const sourceStatus = this.buildSourceStatus(districts, overview, result);
+
+    // Atomic swap — only reached if every step above succeeded.
+    this.sites = sites;
+    this.districts = districts;
+    this.telemetry = telemetry;
+    this.anomalies = anomalies;
+    this.overview = overview;
+    this.sourceStatus = sourceStatus;
   }
 
   private buildDistrict(
     seed: DistrictSeed,
+    sites: MonitoringSite[],
     rng: Rng,
     maxChildren: number,
     maxSchools: number,
+    generatedAt: string,
   ): DistrictRisk {
-    const online = this.sites.filter(
+    const online = sites.filter(
       (s) => s.district === seed.name && s.status !== 'offline',
     );
     const bias = (seed.baseHazard - 50) / 50;
@@ -207,19 +257,23 @@ export class DataStore {
       childWeight: risk.childWeight,
       monitorCount: online.length,
       dataCompleteness,
-      updatedAt: this.generatedAt,
+      updatedAt: generatedAt,
     };
   }
 
-  private buildTelemetry(rng: Rng): void {
-    const basePm = mean(this.districts.map((d) => d.drivers.pm25));
-    const baseCo2 = mean(this.districts.map((d) => d.drivers.co2));
-    const baseTemp = mean(this.districts.map((d) => d.drivers.heatIndex));
-    const baseHum = mean(this.districts.map((d) => d.drivers.humidity));
+  private buildTelemetry(
+    districts: DistrictRisk[],
+    rng: Rng,
+    generatedAt: string,
+  ): TelemetryPoint[] {
+    const basePm = mean(districts.map((d) => d.drivers.pm25));
+    const baseCo2 = mean(districts.map((d) => d.drivers.co2));
+    const baseTemp = mean(districts.map((d) => d.drivers.heatIndex));
+    const baseHum = mean(districts.map((d) => d.drivers.humidity));
 
     const intervalMin = 15;
     const points = (24 * 60 * 7) / intervalMin;
-    const endMs = Date.parse(this.generatedAt);
+    const endMs = Date.parse(generatedAt);
     const startMs = endMs - points * intervalMin * 60_000;
 
     const series: TelemetryPoint[] = [];
@@ -240,10 +294,14 @@ export class DataStore {
         humidity: Number((baseHum + occupancy * 6 + (hour >= 4 && hour <= 7 ? 6 : 0)).toFixed(1)),
       });
     }
-    this.telemetry = series;
+    return series;
   }
 
-  private buildAnomalies(rng: Rng): void {
+  private buildAnomalies(
+    districts: DistrictRisk[],
+    rng: Rng,
+    generatedAt: string,
+  ): Anomaly[] {
     const templates: {
       metric: Anomaly['metric'];
       signal: string;
@@ -274,14 +332,14 @@ export class DataStore {
     const anomalies: Anomaly[] = [];
     let serial = 3000;
     // Elevated districts generate more deviations, weighted by their level.
-    const ranked = [...this.districts].sort((a, b) => b.riskScore - a.riskScore);
+    const ranked = [...districts].sort((a, b) => b.riskScore - a.riskScore);
     for (const d of ranked) {
       const count = d.riskLevel;
       for (let i = 0; i < count; i++) {
         const tpl = templates[rng.int(0, templates.length - 1)];
         const sigma = Number((1.8 + rng.range(0, 2.5) + d.riskLevel * 0.3).toFixed(1));
         const minsAgo = rng.int(3, 60 * 30);
-        const detectedAt = new Date(Date.parse(this.generatedAt) - minsAgo * 60_000).toISOString();
+        const detectedAt = new Date(Date.parse(generatedAt) - minsAgo * 60_000).toISOString();
         anomalies.push({
           id: `A-${serial++}`,
           district: d.district,
@@ -295,40 +353,49 @@ export class DataStore {
       }
     }
     anomalies.sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
-    this.anomalies = anomalies;
+    return anomalies;
   }
 
-  private buildOverview(): void {
+  private buildOverview(
+    districts: DistrictRisk[],
+    sites: MonitoringSite[],
+    anomalies: Anomaly[],
+    generatedAt: string,
+  ): Overview {
     const levelDistribution = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 } as Record<RiskLevel, number>;
-    for (const d of this.districts) levelDistribution[d.riskLevel]++;
+    for (const d of districts) levelDistribution[d.riskLevel]++;
 
-    const highest = [...this.districts].sort((a, b) => b.riskScore - a.riskScore)[0];
-    const online = this.sites.filter((s) => s.status === 'online').length;
+    const highest = [...districts].sort((a, b) => b.riskScore - a.riskScore)[0];
+    const online = sites.filter((s) => s.status === 'online').length;
 
-    this.overview = {
-      generatedAt: this.generatedAt,
-      districtsCovered: this.districts.length,
-      childrenCovered: this.districts.reduce((s, d) => s + d.childPopulation, 0),
+    return {
+      generatedAt,
+      districtsCovered: districts.length,
+      childrenCovered: districts.reduce((s, d) => s + d.childPopulation, 0),
       highestRiskDistrict: highest?.district ?? '',
       highestRiskLevel: highest?.riskLevel ?? 0,
       levelDistribution,
       monitorsOnline: online,
-      monitorsTotal: this.sites.length,
-      dataCompleteness: Number(mean(this.districts.map((d) => d.dataCompleteness)).toFixed(2)),
-      anomaliesActive: this.anomalies.length,
+      monitorsTotal: sites.length,
+      dataCompleteness: Number(mean(districts.map((d) => d.dataCompleteness)).toFixed(2)),
+      anomaliesActive: anomalies.length,
     };
   }
 
-  private buildSourceStatus(): void {
-    const envCompleteness = this.overview.dataCompleteness;
-    this.sourceStatus = [
+  private buildSourceStatus(
+    districts: DistrictRisk[],
+    overview: Overview,
+    result: IngestionResult,
+  ): SourceStatus[] {
+    const envCompleteness = overview.dataCompleteness;
+    return [
       {
         key: 'airgradient',
         label: 'National school climate network (AirGradient API)',
-        state: this.isLive ? 'live' : 'synthetic',
+        state: result.live ? 'live' : 'synthetic',
         completeness: envCompleteness,
-        note: this.isLive
-          ? `Live: ${this.liveSourceLabel}`
+        note: result.live
+          ? `Live: ${result.source}`
           : 'Synthetic fallback — set AIRGRADIENT_API_TOKEN to connect the live network.',
       },
       {
@@ -349,7 +416,7 @@ export class DataStore {
         key: 'dhis2',
         label: 'Epidemiological case data (DHIS2 / partner hospitals)',
         state: 'synthetic',
-        completeness: Number(mean(this.districts.map((d) => d.caseSignal.reportingCompleteness)).toFixed(2)),
+        completeness: Number(mean(districts.map((d) => d.caseSignal.reportingCompleteness)).toFixed(2)),
         note: 'Aggregate counts only. Data use agreements scheduled Q1 2027.',
       },
       {
